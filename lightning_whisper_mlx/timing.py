@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
 import mlx.core as mx
-import numba
+#import numba
 import numpy as np
 from scipy import signal
 
@@ -43,7 +43,7 @@ def median_filter(x: np.ndarray, filter_width: int):
 
     return result
 
-
+"""
 @numba.jit(nopython=True)
 def backtrace(trace: np.ndarray):
     i = trace.shape[0] - 1
@@ -93,12 +93,65 @@ def dtw_cpu(x: np.ndarray):
             trace[i, j] = t
 
     return backtrace(trace)
-
+"""
 
 def dtw(x: np.ndarray) -> np.ndarray:
     # todo: more efficient version in mlx
-    return dtw_cpu(x)
+    #return dtw_cpu(x)
+    return dtw_mlx(x)
 
+
+
+@mx.compile  # compile for performance (MLX’s version of JIT)
+def backtrace_mlx(trace: mx.array):
+    i = trace.shape[0] - 1
+    j = trace.shape[1] - 1
+    trace[0, :] = 2
+    trace[:, 0] = 1
+
+    # Note: using a Python list in a compiled function might not be ideal.
+    # In a production version you might preallocate a result array.
+    result = []
+    while i > 0 or j > 0:
+        result.append((i - 1, j - 1))
+        if trace[i, j] == 0:
+            i -= 1
+            j -= 1
+        elif trace[i, j] == 1:
+            i -= 1
+        elif trace[i, j] == 2:
+            j -= 1
+        else:
+            raise ValueError("Unexpected trace[i, j]")
+    res = mx.array(result)
+    return res[::-1, :].T
+
+
+@mx.compile
+def dtw_mlx(x: mx.array):
+    N, M = x.shape
+    # Create cost and trace arrays with MLX functions.
+    cost = mx.ones((N + 1, M + 1), dtype=mx.float32) * mx.inf
+    trace = -mx.ones((N + 1, M + 1), dtype=mx.float32)
+
+    cost[0, 0] = 0
+    for j in range(1, M + 1):
+        for i in range(1, N + 1):
+            c0 = cost[i - 1, j - 1]
+            c1 = cost[i - 1, j]
+            c2 = cost[i, j - 1]
+
+            if c0 < c1 and c0 < c2:
+                c, t = c0, 0
+            elif c1 < c0 and c1 < c2:
+                c, t = c1, 1
+            else:
+                c, t = c2, 2
+
+            cost[i, j] = x[i - 1, j - 1] + c
+            trace[i, j] = t
+
+    return backtrace(trace)
 
 @dataclass
 class WordTiming:

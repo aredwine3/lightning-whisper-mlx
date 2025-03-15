@@ -1,0 +1,15 @@
+[project]
+name = "lightning-whisper-mlx"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "huggingface-hub>=0.29.3",
+    "mlx>=0.23.2",
+    "numpy>=2.2.3",
+    "pyaudio>=0.2.14",
+    "scipy>=1.15.2",
+    "tiktoken>=0.9.0",
+    "tqdm>=4.67.1",
+]
