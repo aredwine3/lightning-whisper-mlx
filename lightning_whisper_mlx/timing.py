@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from .model import Whisper
 
 
-def median_filter(x: np.ndarray, filter_width: int):
+def median_filter_OG(x: np.ndarray, filter_width: int):
     """Apply a median filter of width `filter_width` along the last dimension of `x`"""
     pad_width = filter_width // 2
     if x.shape[-1] <= pad_width:
@@ -41,6 +41,46 @@ def median_filter(x: np.ndarray, filter_width: int):
     if ndim <= 2:
         result = result[0, 0]
 
+    return result
+
+@mx.compile
+def median_filter(x: mx.array, filter_width: int):
+    """Apply a median filter of width `filter_width` along the last dimension of `x` using MLX"""
+    pad_width = filter_width // 2
+    
+    if x.shape[-1] <= pad_width:
+        return x
+    
+    original_shape = x.shape
+    original_ndim = len(original_shape)
+    
+    # Handle lower dimensional inputs
+    if original_ndim <= 2:
+        x = x.reshape(1, 1, *original_shape) if original_ndim > 0 else x.reshape(1, 1, 1)
+    
+    # Pad the array
+    x_padded = mx.pad(x, [(0, 0), (0, 0), (pad_width, pad_width)], mode="reflect")
+    
+    # Apply sliding window to get all filter windows
+    result = []
+    for i in range(filter_width, x_padded.shape[-1] + 1):
+        window = x_padded[..., i-filter_width:i]
+        # Sort values in each window and take the middle (median)
+        sorted_window = mx.sort(window, axis=-1)
+        median = sorted_window[..., pad_width]
+        result.append(median)
+    
+    result = mx.stack(result, axis=-1)
+    
+    # Restore original shape
+    if original_ndim <= 2:
+        if original_ndim == 0:
+            result = result[0, 0, 0]
+        elif original_ndim == 1:
+            result = result[0, 0]
+        else:  # original_ndim == 2
+            result = result[0]
+            
     return result
 
 """
@@ -103,7 +143,7 @@ def dtw(x: np.ndarray) -> np.ndarray:
 
 
 @mx.compile  # compile for performance (MLX’s version of JIT)
-def backtrace_mlx(trace: mx.array):
+def backtrace_mlx_OG(trace: mx.array):
     i = trace.shape[0] - 1
     j = trace.shape[1] - 1
     trace[0, :] = 2
@@ -127,8 +167,9 @@ def backtrace_mlx(trace: mx.array):
     return res[::-1, :].T
 
 
+
 @mx.compile
-def dtw_mlx(x: mx.array):
+def dtw_mlx_OG(x: mx.array):
     N, M = x.shape
     # Create cost and trace arrays with MLX functions.
     cost = mx.ones((N + 1, M + 1), dtype=mx.float32) * mx.inf
@@ -151,7 +192,117 @@ def dtw_mlx(x: mx.array):
             cost[i, j] = x[i - 1, j - 1] + c
             trace[i, j] = t
 
-    return backtrace(trace)
+    return backtrace_mlx(trace)
+
+@mx.compile
+def dtw_mlx(x: mx.array, use_vmap: bool = True, use_wavefront: bool = False):
+    N, M = x.shape
+    cost = mx.full((N + 1, M + 1), mx.inf, dtype=mx.float32)
+    cost = cost.at[0, 0].set(0)
+    trace = -mx.ones((N + 1, M + 1), dtype=mx.float32)
+    
+    if use_vmap:
+        # Create a vectorized version of process_cell
+        vmap_process = mx.vmap(process_cell, in_axes=(0, 0))
+        
+        for i in range(1, N + 1):
+            # For each position j in row i, gather the three previous costs
+            diag_costs = cost[i-1, :M]
+            above_costs = cost[i-1, 1:M+1] 
+            left_costs = cost[i, :M]
+            
+            # Stack the costs for each position
+            prev_costs = mx.stack([diag_costs, above_costs, left_costs], axis=1)
+            x_vals = x[i-1, :M]
+            
+            # Process all cells in the row with vmap
+            indices, new_costs = vmap_process(prev_costs, x_vals)
+        
+        # Update matrices
+        for j in range(1, M + 1):
+            idx = j - 1
+            cost = cost.at[i, j].set(new_costs[idx])
+            trace = trace.at[i, j].set(indices[idx])
+            
+    elif use_wavefront:
+        # Process the matrix in anti-diagonal wavefronts
+        for wave in range(1, N + M):
+            # Calculate valid i,j positions on this wavefront
+            i_values = mx.arange(max(1, wave - M + 1), min(wave, N) + 1)
+            j_values = wave + 1 - i_values
+            
+            # Filter valid indices
+            valid = (j_values >= 1) & (j_values <= M)
+            if not mx.any(valid):
+                continue
+                
+            i_indices = i_values[valid]
+            j_indices = j_values[valid]
+            
+            # Extract costs for each position in the wavefront
+            diag_indices = mx.stack([i_indices - 1, j_indices - 1], axis=1)
+            above_indices = mx.stack([i_indices - 1, j_indices], axis=1)
+            left_indices = mx.stack([i_indices, j_indices - 1], axis=1)
+            
+            # Get the three directions' costs using vectorized operations
+            diag_costs = mx.array([cost[i.item(), j.item()] for i, j in zip(diag_indices[:, 0], diag_indices[:, 1])])
+            above_costs = mx.array([cost[i.item(), j.item()] for i, j in zip(above_indices[:, 0], above_indices[:, 1])])
+            left_costs = mx.array([cost[i.item(), j.item()] for i, j in zip(left_indices[:, 0], left_indices[:, 1])])
+            
+            # Get corresponding x values
+            x_values = mx.array([x[i.item()-1, j.item()-1] for i, j in zip(i_indices, j_indices)])
+            
+            # Find min costs in one vectorized operation
+            all_costs = mx.stack([diag_costs, above_costs, left_costs], axis=-1)
+            min_indices = mx.argmin(all_costs, axis=-1)
+            min_costs = mx.take_along_axis(all_costs, min_indices[:, None], axis=-1).squeeze(-1)
+            
+            # Update matrices for all cells in this wavefront
+            for idx, (i, j) in enumerate(zip(i_indices, j_indices)):
+                cost = cost.at[i.item(), j.item()].set(x_values[idx] + min_costs[idx])
+                trace = trace.at[i.item(), j.item()].set(min_indices[idx])
+    
+    return backtrace_mlx(trace)
+
+@mx.compile
+def process_cell(prev_costs, x_val):
+    # prev_costs contains [diagonal, above, left]
+    min_idx = mx.argmin(prev_costs)
+    return min_idx, x_val + prev_costs[min_idx]
+
+@mx.compile
+def backtrace_mlx(trace: mx.array):
+    i = trace.shape[0] - 1
+    j = trace.shape[1] - 1
+    trace = trace.copy()
+    trace = trace.at[0, :].set(2)
+    trace = trace.at[:, 0].set(1)
+
+    # Pre-allocate maximum size
+    max_steps = i + j
+    result_i = mx.zeros(max_steps, dtype=mx.int32)
+    result_j = mx.zeros(max_steps, dtype=mx.int32)
+    
+    # Fill arrays in one step where possible
+    step = 0
+    while i > 0 or j > 0:
+        result_i = result_i.at[step].set(i-1)
+        result_j = result_j.at[step].set(j-1)
+        step += 1
+        
+        t = trace[i, j]
+        # Use vectorized conditional movement
+        di = mx.array([1, 1, 0])[t.astype(mx.int32)]
+        dj = mx.array([1, 0, 1])[t.astype(mx.int32)]
+        i -= di
+        j -= dj
+    
+    # Create final result with efficient slicing and reversal
+    result_i = result_i[:step][::-1]
+    result_j = result_j[:step][::-1]
+    
+    return mx.stack([result_i, result_j])
+
 
 @dataclass
 class WordTiming:
@@ -204,7 +355,11 @@ def find_alignment(
     mean = mx.mean(weights, axis=-2, keepdims=True)
     std = mx.var(weights, axis=-2, keepdims=True, ddof=0).sqrt()
     weights = (weights - mean) / std
-    weights = median_filter(np.array(weights), medfilt_width)
+    
+    #weights = median_filter(np.array(weights), medfilt_width)
+    weights = median_filter(mx.array(weights), medfilt_width)
+    
+    
 
     matrix = weights.mean(axis=0)
     matrix = matrix[len(tokenizer.sot_sequence) : -1]
