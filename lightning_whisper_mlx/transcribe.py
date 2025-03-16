@@ -326,7 +326,7 @@ def transcribe_audio(
         consecutive = np.where(
             np.logical_and(timestamp_tokens[:-1], timestamp_tokens[1:])
         )[0]
-        consecutive += 1
+        
         if len(consecutive) > 0:
             slices = consecutive.tolist()
             if single_timestamp_ending:
@@ -361,7 +361,10 @@ def transcribe_audio(
                 seek += last_timestamp_pos * input_stride
         else:
             duration = segment_duration
-            timestamps = tokens[timestamp_tokens.nonzero()[0]]
+            #timestamps = tokens[timestamp_tokens.nonzero()[0]] # AttributeError: 'mlx.core.array' object has no attribute 'nonzero'
+            #timestamps = tokens[np.asarray(timestamp_tokens).nonzero()[0]]
+            np_tokens = np.asarray(tokens)
+            timestamps = mx.array(np_tokens[np.asarray(timestamp_tokens).nonzero()[0]])
             if (
                 len(timestamps) > 0
                 and timestamps[-1].item() != tokenizer.timestamp_begin
@@ -424,7 +427,7 @@ def transcribe_audio(
         for index, res in enumerate(result):
             start_seek, end_seek = mel_timestamps[index]
 
-            tokens = np.array(res.tokens)
+            tokens = mx.array(res.tokens)
             current_segments, value_seek = format_output(tokens, res) 
 
             tokens =  [token

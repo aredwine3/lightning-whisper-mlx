@@ -5,11 +5,11 @@ import gzip
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional
 
+import mlx.core as mx
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-
 
 @dataclass
 class ModelDimensions:
@@ -51,9 +51,9 @@ class Conv1d(nn.Conv1d):
 def sinusoids(length, channels, max_timescale=10000):
     """Returns sinusoids for positional embedding"""
     assert channels % 2 == 0
-    log_timescale_increment = np.log(max_timescale) / (channels // 2 - 1)
+    log_timescale_increment = mx.log(max_timescale) / (channels // 2 - 1)
     inv_timescales = torch.exp(-log_timescale_increment * torch.arange(channels // 2))
-    scaled_time = torch.arange(length)[:, np.newaxis] * inv_timescales[np.newaxis, :]
+    scaled_time = torch.arange(length)[:, mx.newaxis] * inv_timescales[mx.newaxis, :]
     return torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim=1)
 
 
@@ -188,7 +188,7 @@ class TextDecoder(nn.Module):
         )
         self.ln = LayerNorm(n_state)
 
-        mask = torch.empty(n_ctx, n_ctx).fill_(-np.inf).triu_(1)
+        mask = torch.empty(n_ctx, n_ctx).fill_(-mx.inf).triu_(1)
         self.register_buffer("mask", mask, persistent=False)
 
     def forward(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None):

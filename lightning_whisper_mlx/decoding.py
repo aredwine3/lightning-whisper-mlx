@@ -59,7 +59,7 @@ def detect_language(
     logits = model.logits(x, mel)[:, 0]
 
     # collect detected languages; suppress all non-language tokens
-    mask = np.full(logits.shape[-1], -np.inf, dtype=np.float32)
+    mask = mx.full(logits.shape[-1], -mx.inf, dtype=mx.float32)
     mask[list(tokenizer.all_language_tokens)] = 0.0
     logits += mx.array(mask)
     language_tokens = mx.argmax(logits, axis=-1)
@@ -304,8 +304,8 @@ class LogitFilter:
 class SuppressBlank(LogitFilter):
     def __init__(self, tokenizer: Tokenizer, sample_begin: int, n_vocab: int):
         self.sample_begin = sample_begin
-        mask = np.zeros(n_vocab, np.float32)
-        mask[tokenizer.encode(" ") + [tokenizer.eot]] = -np.inf
+        mask = mx.zeros(n_vocab, mx.float32)
+        mask[tokenizer.encode(" ") + [tokenizer.eot]] = -mx.inf
         self.mask = mx.array(mask)
 
     def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
@@ -316,8 +316,8 @@ class SuppressBlank(LogitFilter):
 
 class SuppressTokens(LogitFilter):
     def __init__(self, suppress_tokens: Sequence[int], n_vocab: int):
-        mask = np.zeros(n_vocab, np.float32)
-        mask[list(suppress_tokens)] = -np.inf
+        mask = mx.zeros(n_vocab, mx.float32)
+        mask[list(suppress_tokens)] = -mx.inf
         self.mask = mx.array(mask)
 
     def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
@@ -336,10 +336,10 @@ class ApplyTimestampRules(LogitFilter):
         self.max_initial_timestamp_index = max_initial_timestamp_index
 
     def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
-        mask = np.zeros(logits.shape, np.float32)
+        mask = mx.zeros(logits.shape, mx.float32)
         # suppress <|notimestamps|> which is handled by without_timestamps
         if self.tokenizer.no_timestamps is not None:
-            mask[:, self.tokenizer.no_timestamps] = -np.inf
+            mask[:, self.tokenizer.no_timestamps] = -mx.inf
 
         # timestamps have to appear in pairs, except directly before EOT; mask logits accordingly
         for k in range(tokens.shape[0]):
@@ -354,9 +354,9 @@ class ApplyTimestampRules(LogitFilter):
 
             if last_was_timestamp:
                 if penultimate_was_timestamp:  # has to be non-timestamp
-                    mask[k, self.tokenizer.timestamp_begin :] = -np.inf
+                    mask[k, self.tokenizer.timestamp_begin :] = -mx.inf
                 else:  # cannot be normal text tokens
-                    mask[k, : self.tokenizer.eot] = -np.inf
+                    mask[k, : self.tokenizer.eot] = -mx.inf
 
             timestamps = [
                 i for i, v in enumerate(seq) if v > self.tokenizer.timestamp_begin
@@ -367,18 +367,18 @@ class ApplyTimestampRules(LogitFilter):
                 last_timestamp = timestamps[-1]
                 if not last_timestamp or penultimate_was_timestamp:
                     last_timestamp += 1
-                mask[k, self.tokenizer.timestamp_begin : last_timestamp] = -np.inf
+                mask[k, self.tokenizer.timestamp_begin : last_timestamp] = -mx.inf
 
         if tokens.shape[1] == self.sample_begin:
             # suppress generating non-timestamp tokens at the beginning
-            mask[:, : self.tokenizer.timestamp_begin] = -np.inf
+            mask[:, : self.tokenizer.timestamp_begin] = -mx.inf
 
             # apply the `max_initial_timestamp` option
             if self.max_initial_timestamp_index is not None:
                 last_allowed = (
                     self.tokenizer.timestamp_begin + self.max_initial_timestamp_index
                 )
-                mask[:, last_allowed + 1 :] = -np.inf
+                mask[:, last_allowed + 1 :] = -mx.inf
 
         # if sum of probability over timestamps is above any other token, sample timestamp
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
@@ -388,7 +388,7 @@ class ApplyTimestampRules(LogitFilter):
             )
             max_text_token_logprob = logprobs[k, : self.tokenizer.timestamp_begin].max()
             if timestamp_logprob > max_text_token_logprob:
-                mask[k, : self.tokenizer.timestamp_begin] = -np.inf
+                mask[k, : self.tokenizer.timestamp_begin] = -mx.inf
 
         return logits + mx.array(mask, logits.dtype)
 
@@ -554,7 +554,7 @@ class DecodingTask:
 
         return audio_features
 
-    def _detect_language(self, audio_features: mx.array, tokens: np.array):
+    def _detect_language(self, audio_features: mx.array, tokens: mx.array):
         languages = [self.options.language] * audio_features.shape[0]
         lang_probs = None
 
@@ -565,14 +565,14 @@ class DecodingTask:
             languages = [max(probs, key=probs.get) for probs in lang_probs]
             if self.options.language is None:
                 # write language tokens
-                tokens[:, self.sot_index + 1] = np.array(lang_tokens)
+                tokens[:, self.sot_index + 1] = mx.array(lang_tokens)
 
         return languages, lang_probs
 
     def _main_loop(self, audio_features: mx.array, tokens: mx.array):
         n_batch = tokens.shape[0]
         sum_logprobs: mx.array = mx.zeros(n_batch)
-        no_speech_probs = [np.nan] * n_batch
+        no_speech_probs = [mx.nan] * n_batch
 
         try:
             for i in range(self.sample_len):
@@ -614,8 +614,9 @@ class DecodingTask:
         n_audio *= 1
 
         audio_features: mx.array = self._get_audio_features(mel)  # encoder forward pass
-        tokens: np.array = np.array(self.initial_tokens)
-        tokens = np.broadcast_to(tokens, (n_audio, len(self.initial_tokens))).copy()
+        tokens: mx.array = mx.array(self.initial_tokens)
+        #tokens = mx.broadcast_to(tokens, (n_audio, len(self.initial_tokens))).copy()
+        tokens = mx.array(mx.broadcast_to(tokens, (n_audio, len(self.initial_tokens))))
 
         # detect language if requested, overwriting the language token
         languages, language_probs = self._detect_language(audio_features, tokens)
