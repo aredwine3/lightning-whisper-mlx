@@ -52,7 +52,7 @@ models = {
 }
 
 class LightningWhisperMLX():
-    def __init__(self, model, batch_size = 12, quant=None):
+    def __init__(self, model, batch_size = 12, quant=None, word_timestamps=False):
         if quant and (quant != "4bit" and quant !="8bit"):
             raise ValueError("Quantization must be `4bit` or `8bit`")
         
@@ -61,6 +61,7 @@ class LightningWhisperMLX():
         
         self.name = model
         self.batch_size = batch_size
+        self.word_timestamps = word_timestamps
 
         repo_id = ""
 
@@ -88,5 +89,5 @@ class LightningWhisperMLX():
         hf_hub_download(repo_id=repo_id, filename=filename2, local_dir=local_dir)
     
     def transcribe(self, audio_path, language=None):
-        result = transcribe_audio(audio_path, path_or_hf_repo=f'./mlx_models/{self.name}', language=language, batch_size=self.batch_size)
+        result = transcribe_audio(audio_path, path_or_hf_repo=f'./mlx_models/{self.name}', language=language, batch_size=self.batch_size, word_timestamps=self.word_timestamps)
         return result
