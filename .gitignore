@@ -3,3 +3,7 @@
 /build
 /dist
 /*.egg-info
+.qodo
+*.pyc
+mlx_models/
+*.mp3
