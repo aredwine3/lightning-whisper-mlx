@@ -12,6 +12,9 @@ from rich.panel import Panel
 from rich.text import Text
 from rich import print as rprint
 
+# GUI Imports
+import PySimpleGUI as sg
+
 # Constants
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 1600
@@ -154,10 +157,33 @@ class DummyEnhancer(TextEnhancer):
             
         return text
 
+class KeyTracker:
+    """Tracks the state of keyboard key combinations"""
+    def __init__(self, keys):
+        """Initialize with a list/set of required keys"""
+        self.required_keys = set(keys if isinstance(keys, (list, set)) else [keys])
+        self.pressed_keys = set()
+        
+    def add_key(self, key):
+        """Add a pressed key to the tracker"""
+        self.pressed_keys.add(key)
+        
+    def remove_key(self, key):
+        """Remove a released key from the tracker"""
+        self.pressed_keys.discard(key)
+        
+    def is_combination_active(self):
+        """Check if all required keys are currently pressed"""
+        return self.required_keys.issubset(self.pressed_keys)
+        
+    def clear(self):
+        """Clear all pressed keys"""
+        self.pressed_keys.clear()
+
 class KeyboardTranscriber:
-    def __init__(self, model_name="distil-medium.en", batch_size=12, quant=None, 
+    def __init__(self, model_name="distil-medium.en", batch_size=12, quant=None,
                 streaming_mode=True, record_key='space', auto_paste=True,
-                text_enhance=False, enhancer_type='mlx', llm_model="mlx-community/phi-2"):
+                text_enhance=False, enhancer_type='mlx', llm_model="mlx-community/phi-2", use_gui=True):
         # Initialize Rich console
         self.console = Console()
         
@@ -175,8 +201,9 @@ class KeyboardTranscriber:
         self.buffer = []
         
         # Recording key configuration
-        self.record_key = self._parse_record_key(record_key)
+        self.record_keys = self._parse_record_key(record_key)
         self.record_key_name = record_key.upper()
+        self.key_tracker = KeyTracker(self.record_keys)
         
         # Streaming mode
         self.streaming_mode = streaming_mode
@@ -202,8 +229,15 @@ class KeyboardTranscriber:
         self.transcription_history = []
         self.context_window = 5
         
-    def _parse_record_key(self, key_name):
-        """Convert key name to pynput keyboard Key object if it's a special key"""
+        # GUI setup
+        self.use_gui = use_gui
+        self.gui_window = None
+        self.gui_text = None
+        if self.use_gui:
+            self._setup_gui()
+        
+    def _parse_record_key(self, key_string):
+        """Convert key string to pynput keyboard Key object(s)"""
         # Handle special keys
         special_keys = {
             'space': keyboard.Key.space,
@@ -217,20 +251,100 @@ class KeyboardTranscriber:
             'tab': keyboard.Key.tab
         }
         
-        if key_name.lower() in special_keys:
-            return special_keys[key_name.lower()]
+        # Split by '+' to handle key combinations
+        key_parts = [k.strip().lower() for k in key_string.split('+')]
+        keys = []
         
-        # For regular keys, we'll use the first character
-        if len(key_name) == 1:
-            return keyboard.KeyCode.from_char(key_name.lower())
+        for key_part in key_parts:
+            if key_part in special_keys:
+                keys.append(special_keys[key_part])
+            elif len(key_part) == 1:
+                keys.append(keyboard.KeyCode.from_char(key_part.lower()))
+            else:
+                self.console.print(f"[bold yellow]Warning:[/] '{key_part}' is not a valid key, skipping")
+                continue
+        
+        # Default to space if no valid keys found
+        if not keys:
+            self.console.print(f"[bold yellow]Warning:[/] No valid keys found in '{key_string}', defaulting to SPACE")
+            return [keyboard.Key.space]
             
-        # Default to space if invalid
-        self.console.print(f"[bold yellow]Warning:[/] '{key_name}' is not a valid key, defaulting to SPACE")
-        return keyboard.Key.space
+        return keys
+    
+    def _setup_gui(self):
+        """Set up a floating GUI window to show transcription status"""
+        # Set a dark theme
+        try:
+            sg.theme('Dark Blue 3')
+
+        except:
+            print("Set theme failed, using default theme")
+        
+        from rich import inspect
+        inspect(sg, methods=True, all=True, dunder=True, private=True)
+        
+        # Define the window layout
+        layout = [
+            [sg.Text('READY', size=(30, 1), key='-STATUS-', font=('Arial', 14), 
+                    justification='center', text_color='#A3BE8C')],
+            [sg.Multiline('Hold the recording key to begin transcribing...', 
+                        size=(45, 6), key='-OUTPUT-', font=('Arial', 10),
+                        background_color='#3B4252', text_color='#ECEFF4',
+                        disabled=True, autoscroll=True)]
+        ]
+        
+        # Create the window
+        self.window = sg.Window('Transcription Status', layout, 
+                               keep_on_top=True, finalize=True,
+                               alpha_channel=0.95)
+        
+        # Start the event loop in a separate thread
+        self.gui_thread = threading.Thread(target=self._gui_mainloop)
+        self.gui_thread.daemon = True
+        self.gui_thread.start()
+    
+    def _gui_mainloop(self):
+        """Run the GUI event loop in a separate thread"""
+        try:
+            while True:
+                if self.window is None:
+                    break
+                    
+                event, values = self.window.read(timeout=100)
+                if event == sg.WIN_CLOSED:
+                    break
+                    
+                time.sleep(0.1)  # Reduce CPU usage
+        except Exception as e:
+            print(f"GUI error: {str(e)}")
+        finally:
+            if self.window:
+                self.window.close()
+    
+    def _update_gui_status(self, status, color='#A3BE8C'):
+        """Update the status display in GUI"""
+        if not self.use_gui or not self.window:
+            return
+        
+        try:
+            self.window['-STATUS-'].update(status, text_color=color)
+        except:
+            pass  # GUI might be closed
+    
+    def _update_gui_text(self, text):
+        """Update the transcription text in GUI"""
+        if not self.use_gui or not self.window:
+            return
+        
+        try:
+            self.window['-OUTPUT-'].update(text)
+        except:
+            pass  # GUI might be closed
         
     def start_recording(self):
         """Start recording when key is pressed"""
         self.console.print("\n[bold red]Recording...[/]")
+        self._update_gui_status("RECORDING", color='#BF616A')  # Red color
         self.is_recording = True
         self.buffer = []
         
@@ -249,6 +363,7 @@ class KeyboardTranscriber:
             return
             
         self.console.print("\n[bold yellow]Processing audio...[/]")
+        self._update_gui_status("PROCESSING", color='#EBCB8B')  # Yellow color
         self.is_recording = False
         self.streaming_active = False
         
@@ -305,6 +420,10 @@ class KeyboardTranscriber:
                 # Auto-paste the transcribed text if enabled
                 if self.auto_paste:
                     self.paste_transcription(enhanced_text)
+                    
+                # Update GUI with the transcribed text
+                if self.use_gui:
+                    self._update_gui_text(enhanced_text)
             else:
                 self.console.print("\n[yellow]No speech detected[/]")
         except Exception as e:
@@ -313,6 +432,8 @@ class KeyboardTranscriber:
         # Reset buffer
         self.buffer = []
         self._print_ready_message()
+        
+        self._update_gui_status("READY", color='#A3BE8C')  # Green color
     
     def paste_transcription(self, text):
         """Paste the transcribed text into the active field"""
@@ -341,8 +462,15 @@ class KeyboardTranscriber:
         
         msg = Text()
         msg.append("READY", style="bold green")
-        msg.append(f" (Hold ", style="dim")
-        msg.append(self.record_key_name, style="bold cyan")
+        msg.append(" (Hold ", style="dim")
+        
+        # Handle multiple keys in record_key_name
+        key_names = self.record_key_name.split('+')
+        for i, key in enumerate(key_names):
+            msg.append(key.strip(), style="bold cyan")
+            if i < len(key_names) - 1:
+                msg.append(" + ", style="bold white")
+                
         msg.append(f" to record {mode_info}, ", style="dim")
         msg.append(paste_info, style="italic yellow")
         
@@ -389,7 +517,11 @@ class KeyboardTranscriber:
     def on_key_press(self, key):
         """Handle key press events"""
         try:
-            if key == self.record_key and not self.is_recording:
+            # Add pressed key to tracker
+            self.key_tracker.add_key(key)
+            
+            # Start recording if all required keys are pressed
+            if not self.is_recording and self.key_tracker.is_combination_active():
                 self.start_recording()
             elif key == keyboard.Key.esc:
                 # Exit the program
@@ -401,7 +533,11 @@ class KeyboardTranscriber:
     def on_key_release(self, key):
         """Handle key release events"""
         try:
-            if key == self.record_key and self.is_recording:
+            # Remove released key from tracker
+            self.key_tracker.remove_key(key)
+            
+            # Stop recording if we're recording and this key was part of the combination
+            if self.is_recording and key in self.record_keys:
                 self.stop_recording()
         except:
             pass
@@ -475,6 +611,14 @@ class KeyboardTranscriber:
         if self.enhancer:
             self.enhancer.close()
             
+        # Close the GUI if it exists
+        if self.use_gui and self.window:
+            try:
+                self.window.close()
+                self.window = None
+            except:
+                pass
+            
         self.console.print("[bold red]Stopped[/]")
 
 def main():
@@ -488,7 +632,7 @@ def main():
     parser.add_argument("--no-streaming", action="store_false", dest="streaming",
                         help="Disable streaming transcription (transcribe on key release only)")
     parser.add_argument("--key", type=str, default="space",
-                        help="Key to hold for recording (e.g., space, ctrl, shift, a, s)")
+                        help="Key(s) to hold for recording. For combinations, use '+' (e.g., space, ctrl, shift, ctrl+shift)")
     parser.add_argument("--paste", action="store_true", dest="auto_paste", default=True,
                         help="Automatically paste transcribed text into active text field")
     parser.add_argument("--no-paste", action="store_false", dest="auto_paste",
@@ -499,7 +643,14 @@ def main():
                         help="Type of text enhancer to use: mlx (requires MLX) or basic")
     parser.add_argument("--llm-model", type=str, default="mlx-community/Phi-3-mini-4k-instruct",
                         help="MLX model to use for text enhancement (when --enhance is used)")
-    parser.set_defaults(streaming=True, auto_paste=True, text_enhance=False)
+    
+    parser.add_argument("--gui", action="store_true", dest="use_gui", default=True,
+                        help="Show a floating GUI window with transcription status (default: on)")
+    
+    parser.add_argument("--no-gui", action="store_false", dest="use_gui",
+                        help="Disable the floating GUI window")
+    
+    parser.set_defaults(streaming=True, auto_paste=True, text_enhance=False, use_gui=False) # Set use_gui to False due to issues with it at the moment
     
     args = parser.parse_args()
     
@@ -528,7 +679,8 @@ def main():
                                         auto_paste=args.auto_paste,
                                         text_enhance=args.text_enhance,
                                         enhancer_type=args.enhancer,
-                                        llm_model=args.llm_model)
+                                        llm_model=args.llm_model,
+                                        use_gui=args.use_gui)
         transcriber.start()
     except KeyboardInterrupt:
         print("\nShutting down...")
@@ -570,6 +722,11 @@ if __name__ == "__main__":
     
     # Use a different MLX model for text enhancement
     python stream_keyboard.py --enhance --llm-model mlx-community/mistral-7b-instruct-v0.2
+    
+    # To use key combinations for recording
+    python stream_keyboard.py --key ctrl+shift
+    python stream_keyboard.py --key ctrl+alt
+    python stream_keyboard.py --key shift+a
     """
     
     "uv run stream_keyboard --enhance --llm-model '/Volumes/Extreme SSD/Adan/llm_models/lmstudio-community/Qwen2.5-1.5B-Instruct-MLX-4bit'"
