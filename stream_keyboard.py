@@ -729,4 +729,4 @@ if __name__ == "__main__":
     python stream_keyboard.py --key shift+a
     """
     
-    "uv run stream_keyboard --enhance --llm-model '/Volumes/Extreme SSD/Adan/llm_models/lmstudio-community/Qwen2.5-1.5B-Instruct-MLX-4bit'"
+    "uv run stream_keyboard.py --key ctrl+shift --enhance --llm-model '/Volumes/Extreme SSD/Adan/llm_models/lmstudio-community/Qwen2.5-1.5B-Instruct-MLX-4bit'"
